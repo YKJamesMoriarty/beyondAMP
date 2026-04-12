@@ -146,7 +146,9 @@ class AMPOnPolicyRunner:
             
             mean_value_loss, mean_surrogate_loss, \
             mean_amp_loss, mean_grad_pen_loss, \
-            mean_policy_pred, mean_expert_pred = \
+            mean_policy_pred, mean_expert_pred, \
+            mean_disc_agent_acc, mean_disc_demo_acc, \
+            mean_disc_margin = \
                 self.alg.update()
                 
             stop = time.time()
@@ -192,6 +194,10 @@ class AMPOnPolicyRunner:
         self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
         self.writer.add_scalar('Loss/AMP', locs['mean_amp_loss'], locs['it'])
         self.writer.add_scalar('Loss/AMP_grad', locs['mean_grad_pen_loss'], locs['it'])
+        # 判别器二分类准确率：agent 判负类、demo 判正类。
+        self.writer.add_scalar('Disc_Agent_Acc', locs['mean_disc_agent_acc'], locs['it'])
+        self.writer.add_scalar('Disc_Demo_Acc', locs['mean_disc_demo_acc'], locs['it'])
+        self.writer.add_scalar('Disc_Margin', locs['mean_disc_margin'], locs['it'])
         self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
@@ -222,6 +228,9 @@ class AMPOnPolicyRunner:
                           f"""{'AMP grad pen loss:':>{pad}} {locs['mean_grad_pen_loss']:.4f}\n"""
                           f"""{'AMP mean policy pred:':>{pad}} {locs['mean_policy_pred']:.4f}\n"""
                           f"""{'AMP mean expert pred:':>{pad}} {locs['mean_expert_pred']:.4f}\n"""
+                          f"""{'Disc Agent Acc:':>{pad}} {locs['mean_disc_agent_acc']:.4f}\n"""
+                          f"""{'Disc Demo Acc:':>{pad}} {locs['mean_disc_demo_acc']:.4f}\n"""
+                          f"""{'Disc Margin:':>{pad}} {locs['mean_disc_margin']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")

@@ -130,6 +130,9 @@ class AMPPPO:
         mean_grad_pen_loss = 0
         mean_policy_pred = 0
         mean_expert_pred = 0
+        mean_disc_agent_acc = 0
+        mean_disc_demo_acc = 0
+        mean_disc_margin = 0
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
@@ -234,6 +237,13 @@ class AMPPPO:
                 mean_grad_pen_loss += grad_pen_loss.item()
                 mean_policy_pred += policy_d.mean().item()
                 mean_expert_pred += expert_d.mean().item()
+                mean_disc_margin += (expert_d.mean() - policy_d.mean()).item()
+                # 二分类准确率（与 MimicKit 逻辑一致）:
+                # - agent 样本应判为负类: logit < 0
+                # - demo  样本应判为正类: logit > 0
+                disc_agent_acc, disc_demo_acc = self._compute_disc_acc(policy_d, expert_d)
+                mean_disc_agent_acc += disc_agent_acc.item()
+                mean_disc_demo_acc += disc_demo_acc.item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
@@ -242,6 +252,26 @@ class AMPPPO:
         mean_grad_pen_loss /= num_updates
         mean_policy_pred /= num_updates
         mean_expert_pred /= num_updates
+        mean_disc_agent_acc /= num_updates
+        mean_disc_demo_acc /= num_updates
+        mean_disc_margin /= num_updates
         self.storage.clear()
 
-        return mean_value_loss, mean_surrogate_loss, mean_amp_loss, mean_grad_pen_loss, mean_policy_pred, mean_expert_pred
+        return (
+            mean_value_loss,
+            mean_surrogate_loss,
+            mean_amp_loss,
+            mean_grad_pen_loss,
+            mean_policy_pred,
+            mean_expert_pred,
+            mean_disc_agent_acc,
+            mean_disc_demo_acc,
+            mean_disc_margin,
+        )
+
+    @staticmethod
+    def _compute_disc_acc(disc_agent_logit: torch.Tensor, disc_demo_logit: torch.Tensor):
+        """计算判别器二分类准确率。"""
+        agent_acc = torch.mean((disc_agent_logit < 0).float())
+        demo_acc = torch.mean((disc_demo_logit > 0).float())
+        return agent_acc, demo_acc
