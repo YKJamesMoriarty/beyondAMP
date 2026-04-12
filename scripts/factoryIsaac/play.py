@@ -5,6 +5,7 @@
 import argparse
 import pickle
 import tqdm
+import re
 from isaaclab import __version__ as omni_isaac_lab_version
 from isaaclab.app import AppLauncher
 
@@ -16,6 +17,12 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 if omni_isaac_lab_version < "0.21.0":
     parser.add_argument("--cpu", action="store_true", default=False, help="Use CPU pipeline.")
 parser.add_argument("--target", type=str, default=None, help="If use, direct point to the target ckpt")
+parser.add_argument(
+    "--wandb_path",
+    type=str,
+    default=None,
+    help="Wandb run path or checkpoint path, e.g. entity/project/run_id or entity/project/run_id/model_50000.pt",
+)
 
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
@@ -62,11 +69,70 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 from rsl_rl_amp.runners import OnPolicyRunner
 from beyondAMP.isaaclab.rsl_rl.exporter import export_policy_as_jit, export_policy_as_onnx
 
+
+def _resolve_wandb_checkpoint(wandb_path: str) -> tuple[str, str, str]:
+    """从 wandb 解析并下载 checkpoint。
+
+    Returns:
+        (run_path, model_file_name, local_checkpoint_path)
+    """
+    import wandb
+
+    query_path = wandb_path.strip().rstrip("/")
+    target_file = None
+
+    # 支持直接传 entity/project/run_id/model_xxx.pt
+    if query_path.endswith(".pt"):
+        target_file = os.path.basename(query_path)
+        query_path = os.path.dirname(query_path)
+
+    api = wandb.Api()
+    run = api.run(query_path)
+    run_files = list(run.files())
+
+    chosen_file = None
+    if target_file is not None:
+        for f in run_files:
+            if os.path.basename(f.name) == target_file:
+                chosen_file = f
+                break
+        if chosen_file is None:
+            raise FileNotFoundError(f"Cannot find checkpoint '{target_file}' in wandb run: {query_path}")
+    else:
+        # 自动选最大的 model_{iter}.pt
+        model_candidates = []
+        for f in run_files:
+            matched = re.search(r"model_(\d+)\.pt$", os.path.basename(f.name))
+            if matched is not None:
+                model_candidates.append((int(matched.group(1)), f))
+        if len(model_candidates) == 0:
+            raise FileNotFoundError(f"No checkpoint like model_*.pt found in wandb run: {query_path}")
+        model_candidates.sort(key=lambda x: x[0])
+        chosen_file = model_candidates[-1][1]
+
+    run_id = query_path.split("/")[-1]
+    download_root = os.path.abspath(os.path.join("logs", "rsl_rl", "temp", run_id))
+    os.makedirs(download_root, exist_ok=True)
+
+    downloaded_fp = chosen_file.download(root=download_root, replace=True)
+    local_checkpoint = os.path.abspath(downloaded_fp.name)
+    downloaded_fp.close()
+
+    return query_path, chosen_file.name, local_checkpoint
+
+
 def main():
     """Play with RSL-RL agent. base branch"""
     task_name = args_cli.task
-    if args_cli.target is None:
-        raise ValueError("Please using the target specified way.")
+    if args_cli.wandb_path is not None:
+        run_path_wandb, model_file_name, resume_path = _resolve_wandb_checkpoint(args_cli.wandb_path)
+        log_root_path = os.path.dirname(os.path.dirname(resume_path))
+        print(f"[INFO]: Downloaded wandb checkpoint: {run_path_wandb}/{model_file_name}")
+        print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+        log_dir = os.path.dirname(resume_path)
+        run_path = os.path.dirname(resume_path)
+    elif args_cli.target is None:
+        raise ValueError("Please provide either --target or --wandb_path.")
     else:
         resume_path = os.path.abspath(args_cli.target)
         log_root_path = os.path.dirname(os.path.dirname(resume_path))
@@ -80,6 +146,8 @@ def main():
         output_file = os.path.join(sample_dir, "total_data.pkl")
     
     if task_name is None:
+        if args_cli.wandb_path is not None:
+            raise ValueError("When using --wandb_path, please specify --task explicitly.")
         assert os.path.exists(os.path.join(run_path, "params", "args.pkl")), "No task specified."
         with open(os.path.join(run_path, "params", "args.pkl"), "rb") as f:
             args_old = pickle.load(f)

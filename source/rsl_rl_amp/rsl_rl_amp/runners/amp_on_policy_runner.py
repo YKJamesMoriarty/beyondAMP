@@ -4,7 +4,6 @@ from collections import deque
 import statistics
 
 import numpy as np
-from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from rsl_rl_amp.algorithms import AMPPPO, PPO, AMPPPOWeighted
@@ -13,6 +12,7 @@ from rsl_rl_amp.env import VecEnv
 from rsl_rl_amp.modules.amp_discriminator import AMPDiscriminator
 from rsl_rl_amp.utils.utils import Normalizer
 from beyondAMP.isaaclab.rsl_rl.amp_wrapper import AMPEnvWrapper
+from .logger_backend import ScalarLogger
 
 from beyondAMP.motion.motion_dataset import MotionDataset
 
@@ -65,6 +65,7 @@ class AMPOnPolicyRunner:
         # Log
         self.log_dir = log_dir
         self.writer = None
+        self.logger_type = str(self.cfg.get("logger", "tensorboard"))
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
@@ -74,7 +75,8 @@ class AMPOnPolicyRunner:
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
-            self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            # 统一通过日志后端封装，支持 tensorboard / wandb。
+            self.writer = ScalarLogger(self.logger_type, self.log_dir, self.cfg)
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
         obs = self.env.get_observations()
@@ -113,7 +115,10 @@ class AMPOnPolicyRunner:
                     next_amp_obs_with_term[reset_env_ids] = terminal_amp_states
 
                     lerp_rewards, d_logits, amp_rewards = self.alg.discriminator.predict_amp_reward(
-                        amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer)[0]
+                        amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer
+                    )
+                    d_logits = d_logits.squeeze(-1)
+                    amp_rewards = amp_rewards.squeeze(-1)
                     amp_obs = torch.clone(next_amp_obs)
                     self.alg.process_env_step(lerp_rewards, dones, infos, next_amp_obs_with_term)
                     
@@ -154,6 +159,7 @@ class AMPOnPolicyRunner:
         
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+        self.close()
 
     def log_loc(self, cur_sum, dones, buffer):
         new_ids = (dones > 0).nonzero(as_tuple=False)
@@ -194,12 +200,14 @@ class AMPOnPolicyRunner:
         if len(locs['rewbuffer']) > 0:
             self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
-            self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
+            # 注意：wandb 需要 step 全局单调递增。这里统一用 iteration 作为 step，
+            # 避免和 time 轴混用导致 "step less than current step" 告警与数据被丢弃。
+            self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), locs['it'])
+            self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_amp_reward', statistics.mean(locs['ampbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_discri_logits', statistics.mean(locs['discribuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_amp_reward/time', statistics.mean(locs['ampbuffer']), self.tot_time)
-            self.writer.add_scalar('Train/mean_discri_logits/time', statistics.mean(locs['discribuffer']), self.tot_time)
+            self.writer.add_scalar('Train/mean_amp_reward/time', statistics.mean(locs['ampbuffer']), locs['it'])
+            self.writer.add_scalar('Train/mean_discri_logits/time', statistics.mean(locs['discribuffer']), locs['it'])
 
         str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
 
@@ -248,6 +256,9 @@ class AMPOnPolicyRunner:
             'iter': self.current_learning_iteration,
             'infos': infos,
             }, path)
+        # 可选：上传 checkpoint 到 wandb（tensorboard 模式下为 no-op）。
+        if self.writer is not None:
+            self.writer.save_file(path)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path, map_location=self.device, weights_only=False)
@@ -264,3 +275,9 @@ class AMPOnPolicyRunner:
         if device is not None:
             self.alg.actor_critic.to(device)
         return self.alg.actor_critic.act_inference
+
+    def close(self):
+        """关闭日志资源（可重复调用）。"""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None

@@ -33,12 +33,12 @@ import os
 from collections import deque
 import statistics
 
-from torch.utils.tensorboard import SummaryWriter
 import torch
 
 from rsl_rl_amp.algorithms import PPO
 from rsl_rl_amp.modules import ActorCritic, ActorCriticRecurrent
 from rsl_rl_amp.env import VecEnv
+from .logger_backend import ScalarLogger
 
 
 class OnPolicyRunner:
@@ -74,6 +74,7 @@ class OnPolicyRunner:
         # Log
         self.log_dir = log_dir
         self.writer = None
+        self.logger_type = str(self.cfg.get("logger", "tensorboard"))
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
@@ -83,7 +84,8 @@ class OnPolicyRunner:
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
-            self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+            # 统一通过日志后端封装，支持 tensorboard / wandb。
+            self.writer = ScalarLogger(self.logger_type, self.log_dir, self.cfg)
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
         obs = self.env.get_observations()
@@ -142,6 +144,7 @@ class OnPolicyRunner:
         
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+        self.close()
 
     def log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -175,8 +178,10 @@ class OnPolicyRunner:
         if len(locs['rewbuffer']) > 0:
             self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
-            self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
+            # 注意：wandb 需要 step 全局单调递增。这里统一用 iteration 作为 step，
+            # 避免和 time 轴混用导致 "step less than current step" 告警与数据被丢弃。
+            self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), locs['it'])
+            self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), locs['it'])
 
         str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
 
@@ -219,6 +224,9 @@ class OnPolicyRunner:
             'iter': self.current_learning_iteration,
             'infos': infos,
             }, path)
+        # 可选：上传 checkpoint 到 wandb（tensorboard 模式下为 no-op）。
+        if self.writer is not None:
+            self.writer.save_file(path)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path, map_location=self.device, weights_only=False)
@@ -233,3 +241,9 @@ class OnPolicyRunner:
         if device is not None:
             self.alg.actor_critic.to(device)
         return self.alg.actor_critic.act_inference
+
+    def close(self):
+        """关闭日志资源（可重复调用）。"""
+        if self.writer is not None:
+            self.writer.close()
+            self.writer = None

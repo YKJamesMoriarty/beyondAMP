@@ -51,5 +51,5 @@ install_modules() {
 }
 
 
-update_repo git@github.com:Renforce-Dynamics/assetslib.git ./data/assets/assetslib
-update_repo git@github.com:Renforce-Dynamics/robotlib.git ./source/robotlib
+update_repo https://github.com/Renforce-Dynamics/assetslib.git ./data/assets/assetslib
+update_repo https://github.com/Renforce-Dynamics/robotlib.git ./source/robotlib

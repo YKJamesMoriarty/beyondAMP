@@ -98,7 +98,12 @@ def main():
     rsl_arg_cli.dump_pickle(os.path.join(log_dir, "params", "args.pkl"), args_cli)
 
     # run training
-    runner.learn(**learn_cfg)
+    try:
+        runner.learn(**learn_cfg)
+    finally:
+        # 统一释放日志后端资源（如 wandb run / tensorboard writer）。
+        if hasattr(runner, "close"):
+            runner.close()
 
     # close the simulator
     env.close()

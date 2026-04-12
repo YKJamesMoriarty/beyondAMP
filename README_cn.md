@@ -37,6 +37,24 @@ scripts/factoryIsaac/train.py --task AMPG1_Basic --headless
 # scripts/factoryIsaac/train.py --task AMPG1_Hard --headless
 ```
 
+如果要训练 **stance 专属的纯 AMP 任务**（使用 `data/box/stance/trim_stance_orthodox_idle_normal_2_150.npz`）：
+
+```bash
+python scripts/factoryIsaac/train.py --task beyondAMP-StanceTask-G1-AMPBasic --headless --num_envs 128 --device cuda:0 --rldevice cuda:0
+```
+
+如果要记录到 Weights & Biases：
+
+```bash
+python scripts/factoryIsaac/train.py --task beyondAMP-StanceTask-G1-AMPBasic --headless --num_envs 128 --device cuda:0 --rldevice cuda:0 --logger wandb --log_project_name beyondamp
+```
+
+也可以在命令行直接覆盖训练轮数和保存间隔，例如：
+
+```bash
+python scripts/factoryIsaac/train.py --task beyondAMP-StanceTask-G1-AMPBasic --headless --num_envs 128 --device cuda:0 --rldevice cuda:0 --logger wandb --log_project_name beyondamp --max_iterations 100000 --save_interval 500
+```
+
 要评估或可视化一个已训练的检查点 (checkpoint)：
 
 ```bash

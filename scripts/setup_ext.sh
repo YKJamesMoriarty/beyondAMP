@@ -40,8 +40,8 @@ install_modules() {
 
 echo "🧩 Checking and cloning required repositories..."
 
-clone_repo git@github.com:Renforce-Dynamics/assetslib.git ./data/assets/assetslib
-clone_repo git@github.com:Renforce-Dynamics/robotlib.git ./source/robotlib
+clone_repo https://github.com/Renforce-Dynamics/assetslib.git ./data/assets/assetslib
+clone_repo https://github.com/Renforce-Dynamics/robotlib.git ./source/robotlib
 
 modules=(
     "./source/robotlib"

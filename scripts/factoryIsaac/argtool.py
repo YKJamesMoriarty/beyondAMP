@@ -19,6 +19,8 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
         "--experiment_name", type=str, default=None, help="Name of the experiment folder where logs will be stored."
     )
     arg_group.add_argument("--run_name", type=str, default=None, help="Run name suffix to the log directory.")
+    arg_group.add_argument("--max_iterations", type=int, default=None, help="Override max training iterations.")
+    arg_group.add_argument("--save_interval", type=int, default=None, help="Override checkpoint save interval.")
     # -- load arguments
     arg_group.add_argument("--resume", action="store_true", help="Whether to resume from a checkpoint.")
     # arg_group.add_argument("--load_run", type=str, default=None, help="Name of the run folder to resume from.")
@@ -59,6 +61,12 @@ def parse_rsl_rl_cfg(task_name: str, args_cli: argparse.Namespace, rsl_rl_cfg=No
         rsl_rl_cfg.load_checkpoint = args_cli.checkpoint
     if args_cli.run_name is not None:
         rsl_rl_cfg.run_name = args_cli.run_name
+    if args_cli.experiment_name is not None:
+        rsl_rl_cfg.experiment_name = args_cli.experiment_name
+    if args_cli.max_iterations is not None:
+        rsl_rl_cfg.max_iterations = args_cli.max_iterations
+    if args_cli.save_interval is not None:
+        rsl_rl_cfg.save_interval = args_cli.save_interval
     if args_cli.logger is not None:
         rsl_rl_cfg.logger = args_cli.logger
     # set the project name for wandb and neptune
@@ -165,4 +173,3 @@ def prepare_wrapper(env, args_cli, agent_cfg) -> Tuple[RslRlVecEnvWrapper, calla
 def dump_pickle(fpath, obj):
     with open(fpath, "wb") as f:
         pickle.dump(obj, f)        
-

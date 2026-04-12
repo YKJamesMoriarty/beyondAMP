@@ -32,6 +32,20 @@ python scripts/factoryIsaac/train.py --task beyondAMP-DemoPunch-G1-BasicAMP --he
 # python scripts/factoryIsaac/train.py --task beyondAMP-DemoPunch-G1-HardAMPTrack --headless
 ```
 
+For a dedicated **stance-only pure AMP** task (using `data/box/stance/trim_stance_orthodox_idle_normal_2_150.npz`):
+```bash
+python scripts/factoryIsaac/train.py --task beyondAMP-StanceTask-G1-AMPBasic --headless --num_envs 128 --device cuda:0 --rldevice cuda:0
+```
+
+Enable Weights & Biases logging:
+```bash
+python scripts/factoryIsaac/train.py --task beyondAMP-StanceTask-G1-AMPBasic --headless --num_envs 128 --device cuda:0 --rldevice cuda:0 --logger wandb --log_project_name beyondamp
+```
+You can also override iterations directly from CLI, for example:
+```bash
+python scripts/factoryIsaac/train.py --task beyondAMP-StanceTask-G1-AMPBasic --headless --num_envs 128 --device cuda:0 --rldevice cuda:0 --logger wandb --log_project_name beyondamp --max_iterations 100000 --save_interval 500
+```
+
 To evaluate or visualize a trained checkpoint:
 ```bash
 python scripts/factoryIsaac/play.py --headless --target <path to your ckpt.pt> --video --num_envs 32
