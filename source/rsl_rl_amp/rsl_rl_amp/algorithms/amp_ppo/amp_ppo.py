@@ -45,7 +45,7 @@ class AMPPPO:
         self.discriminator.to(self.device)
         self.amp_transition = RolloutStorage.Transition()
         self.amp_storage = ReplayBuffer(
-            discriminator.input_dim // 2, amp_replay_buffer_size, device)
+            discriminator.input_dim, amp_replay_buffer_size, device, store_next_state=False)
         self.amp_data:MotionDataset = amp_data
         self.amp_normalizer = amp_normalizer
 
@@ -108,9 +108,8 @@ class AMPPPO:
         if 'time_outs' in infos:
             self.transition.rewards += self.gamma * torch.squeeze(self.transition.values * infos['time_outs'].unsqueeze(1).to(self.device), 1)
 
-        not_done_idxs = (dones == False).nonzero().squeeze()
-        self.amp_storage.insert(
-            self.amp_transition.observations, amp_obs)
+        # amp_obs 是 runner 传入的判别器输入（历史窗口拼接向量）。
+        self.amp_storage.insert(amp_obs)
 
         # Record the transition
         self.storage.add_transitions(self.transition)
@@ -193,23 +192,21 @@ class AMPPPO:
                     value_loss = (returns_batch - value_batch).pow(2).mean()
 
                 # Discriminator loss.
-                policy_state, policy_next_state = sample_amp_policy
-                expert_state, expert_next_state = sample_amp_expert
+                policy_disc_obs = sample_amp_policy
+                expert_disc_obs = sample_amp_expert
                 if self.amp_normalizer is not None:
                     with torch.no_grad():
-                        policy_state = self.amp_normalizer.normalize_torch(policy_state, self.device)
-                        policy_next_state = self.amp_normalizer.normalize_torch(policy_next_state, self.device)
-                        expert_state = self.amp_normalizer.normalize_torch(expert_state, self.device)
-                        expert_next_state = self.amp_normalizer.normalize_torch(expert_next_state, self.device)
-                policy_d = self.discriminator(torch.cat([policy_state, policy_next_state], dim=-1))
-                expert_d = self.discriminator(torch.cat([expert_state, expert_next_state], dim=-1))
+                        policy_disc_obs = self.amp_normalizer.normalize_torch(policy_disc_obs, self.device)
+                        expert_disc_obs = self.amp_normalizer.normalize_torch(expert_disc_obs, self.device)
+                policy_d = self.discriminator(policy_disc_obs)
+                expert_d = self.discriminator(expert_disc_obs)
                 expert_loss = torch.nn.MSELoss()(
                     expert_d, torch.ones(expert_d.size(), device=self.device))
                 policy_loss = torch.nn.MSELoss()(
                     policy_d, -1 * torch.ones(policy_d.size(), device=self.device))
                 amp_loss = 0.5 * (expert_loss + policy_loss)
                 grad_pen_loss = self.discriminator.compute_grad_pen(
-                    *sample_amp_expert, lambda_=10)
+                    expert_disc_obs, lambda_=10)
 
                 # Compute total loss.
                 loss = (
@@ -228,8 +225,8 @@ class AMPPPO:
                     self.actor_critic.std.data = self.actor_critic.std.data.clamp(min=self.min_std)
 
                 if self.amp_normalizer is not None:
-                    self.amp_normalizer.update(policy_state.cpu().numpy())
-                    self.amp_normalizer.update(expert_state.cpu().numpy())
+                    self.amp_normalizer.update(policy_disc_obs.cpu().numpy())
+                    self.amp_normalizer.update(expert_disc_obs.cpu().numpy())
 
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()

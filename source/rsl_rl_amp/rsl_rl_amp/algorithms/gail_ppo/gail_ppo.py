@@ -61,10 +61,13 @@ class GAILPPO:
         # AMP dataset and optional normalization
         self.amp_data = amp_data
         self.amp_normalizer = amp_normalizer
-        # Stores policy-generated (state, next_state) transitions
-        self.amp_storage = ReplayBuffer(discriminator.input_dim // 2,
-                                        amp_replay_buffer_size,
-                                        device)
+        # Stores policy-generated discriminator observations (history-window vector).
+        self.amp_storage = ReplayBuffer(
+            discriminator.input_dim,
+            amp_replay_buffer_size,
+            device,
+            store_next_state=False,
+        )
 
         # GAIL hyperparameters
         self.lambda_gail = lambda_gail
@@ -145,8 +148,8 @@ class GAILPPO:
                               infos['time_outs'].unsqueeze(1).to(self.device), 1)
             )
 
-        # Insert (state, next_state) for discriminator training
-        self.amp_storage.insert(self.amp_transition.observations, amp_obs)
+        # Insert discriminator observations for training.
+        self.amp_storage.insert(amp_obs)
 
         # Standard PPO rollout storage
         self.storage.add_transitions(self.transition)
@@ -211,21 +214,17 @@ class GAILPPO:
             # ------------------------------------------------------------
             # Discriminator update
             # ------------------------------------------------------------
-            policy_state, policy_next_state = sample_amp_policy
-            expert_state, expert_next_state = sample_amp_expert
+            policy_disc_obs = sample_amp_policy
+            expert_disc_obs = sample_amp_expert
 
             if self.amp_normalizer is not None:
                 with torch.no_grad():
-                    policy_state = self.amp_normalizer.normalize_torch(policy_state, self.device)
-                    policy_next_state = self.amp_normalizer.normalize_torch(policy_next_state, self.device)
-                    expert_state = self.amp_normalizer.normalize_torch(expert_state, self.device)
-                    expert_next_state = self.amp_normalizer.normalize_torch(expert_next_state, self.device)
+                    policy_disc_obs = self.amp_normalizer.normalize_torch(policy_disc_obs, self.device)
+                    expert_disc_obs = self.amp_normalizer.normalize_torch(expert_disc_obs, self.device)
 
             for _ in range(self.disc_steps):
-                policy_logits = self.discriminator(
-                    torch.cat([policy_state, policy_next_state], dim=-1))
-                expert_logits = self.discriminator(
-                    torch.cat([expert_state, expert_next_state], dim=-1))
+                policy_logits = self.discriminator(policy_disc_obs)
+                expert_logits = self.discriminator(expert_disc_obs)
 
                 expert_labels = torch.ones_like(expert_logits, device=self.device)
                 policy_labels = torch.zeros_like(policy_logits, device=self.device)
@@ -236,8 +235,7 @@ class GAILPPO:
 
                 # Gradient penalty if provided
                 if hasattr(self.discriminator, 'compute_grad_pen'):
-                    gp = self.discriminator.compute_grad_pen(
-                        *sample_amp_expert, lambda_=self.grad_pen_lambda)
+                    gp = self.discriminator.compute_grad_pen(expert_disc_obs, lambda_=self.grad_pen_lambda)
                     d_loss = d_loss + gp
 
                 self.disc_optimizer.zero_grad()
@@ -285,8 +283,7 @@ class GAILPPO:
             # GAIL reward: discriminator-based shaping
             # ------------------------------------------------------------
             with torch.no_grad():
-                policy_logits_for_reward = self.discriminator(
-                    torch.cat([policy_state, policy_next_state], dim=-1))
+                policy_logits_for_reward = self.discriminator(policy_disc_obs)
                 gail_r = self._safe_gail_reward(policy_logits_for_reward).squeeze()
 
                 if returns_batch.dim() > gail_r.dim():

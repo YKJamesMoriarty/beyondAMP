@@ -58,31 +58,28 @@ class AMPPPOWeighted(AMPPPO):
     @torch.no_grad()
     def _compute_transition_scores(self) -> torch.Tensor:
         """
-        Evaluate every expert transition using the discriminator.
+        Evaluate expert discriminator samples using the discriminator.
 
         Returns:
-            Tensor: shape [N_transitions],
+            Tensor: shape [N_samples],
                     each entry in [0, 1] (sigmoid(d)).
         """
         if self.rescore_size is None:
-            t, tp1 = self.amp_data.index_t, self.amp_data.index_tp1
+            idx_end = self.amp_data.index_hist_end
+            hist_idx = self.amp_data.build_history_indices_from_end(idx_end)
         else:
-            t, tp1 = self.amp_data.sample_batch(self.rescore_size, replacement=False)
-        expert_state, expert_next_state = \
-            self.amp_data.build_transition(t, tp1)
+            hist_idx = self.amp_data.sample_history_batch(self.rescore_size, replacement=False)
+        expert_disc_obs = self.amp_data.build_history(hist_idx)
 
         # Optional normalization
         if self.amp_normalizer is not None:
-            expert_state = self.amp_normalizer.normalize_torch(expert_state, self.device)
-            expert_next_state = self.amp_normalizer.normalize_torch(expert_next_state, self.device)
+            expert_disc_obs = self.amp_normalizer.normalize_torch(expert_disc_obs, self.device)
 
-        # Concatenate inputs for discriminator
-        inp = torch.cat([expert_state, expert_next_state], dim=-1)  # (B, D_s+D_s)
-        d = self.discriminator(inp)  # (B,1)
+        d = self.discriminator(expert_disc_obs)  # (B,1)
 
         # Stable scoring function in [0,1]
         score = sigmoid(d).squeeze(-1)
-        return score, t, tp1
+        return score
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -121,7 +118,7 @@ class AMPPPOWeighted(AMPPPO):
         # -----------------------------
         if self.rescore_interval is not None:
             if self.rescore_ptr % self.rescore_interval == 0:
-                scores, t, tp1 = self._compute_transition_scores()
+                scores = self._compute_transition_scores()
                 new_weights = self._score_to_weight(scores, self.weight_update_coef)
                 self.amp_data.update_weights(new_weights)
                 self.rescore_ptr = 0

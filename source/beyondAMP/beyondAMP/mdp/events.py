@@ -128,8 +128,11 @@ def reset_to_ref_motion_dataset(
 
     ids, _ = motion_dataset.sample_batch(batch_size)
 
-    joint_pos = motion_dataset.joint_pos[ids].clone()      # [B, J]
-    joint_vel = motion_dataset.joint_vel[ids].clone()      # [B, J]
+    # reset 必须使用绝对关节状态写入仿真；
+    # MotionDataset.joint_pos / joint_vel 已用于判别器语义对齐（相对量），
+    # 因此这里显式取 *_abs，避免把相对值误写进物理状态。
+    joint_pos = motion_dataset.joint_pos_abs[ids].clone()  # [B, J]
+    joint_vel = motion_dataset.joint_vel_abs[ids].clone()  # [B, J]
     anchor_pos = motion_dataset.anchor_pos_w[ids]          # [B, 3]
     anchor_quat = motion_dataset.anchor_quat_w[ids]        # [B, 4]
     anchor_lin_vel = motion_dataset.anchor_lin_vel_w[ids]  # [B, 3]

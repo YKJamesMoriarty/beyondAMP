@@ -43,9 +43,12 @@ class AMPOnPolicyRunner:
 
         amp_data = env.motion_dataset
         amp_obs_dim = env.get_amp_observations().shape[-1] # amp_data.observation_dim
-        amp_normalizer = Normalizer(amp_obs_dim)
+        self.amp_obs_dim = amp_obs_dim
+        self.amp_obs_history_steps = max(int(self.amp_data_cfg.get("history_steps", 2)), 2)
+        self.amp_disc_obs_dim = self.amp_obs_dim * self.amp_obs_history_steps
+        amp_normalizer = Normalizer(self.amp_disc_obs_dim)
         discriminator = AMPDiscriminator(
-            amp_obs_dim * 2,
+            self.amp_disc_obs_dim,
             train_cfg['amp_reward_coef'],
             train_cfg['amp_discr_hidden_dims'], device,
             train_cfg['amp_task_reward_lerp']).to(self.device)
@@ -71,6 +74,37 @@ class AMPOnPolicyRunner:
         self.current_learning_iteration = 0
 
         _, _ = self.env.reset()
+        self._amp_obs_history = None
+
+    def _init_amp_history(self, amp_obs: torch.Tensor):
+        """使用当前观测初始化历史窗口 [N, H, D]。"""
+        self._amp_obs_history = amp_obs.unsqueeze(1).repeat(1, self.amp_obs_history_steps, 1)
+
+    def _push_amp_history(self, next_amp_obs: torch.Tensor):
+        """历史窗口左移一帧，并写入最新 amp 观测。"""
+        self._amp_obs_history = torch.roll(self._amp_obs_history, shifts=-1, dims=1)
+        self._amp_obs_history[:, -1, :] = next_amp_obs
+
+    def _flatten_amp_history(self):
+        """展平历史窗口为判别器输入 [N, H*D]。"""
+        return self._amp_obs_history.reshape(self._amp_obs_history.shape[0], -1)
+
+    def _reset_amp_history_for_envs(self, env_ids: torch.Tensor, reset_obs: torch.Tensor):
+        """done 环境进入新 episode 时，将历史窗口重置为当前 reset 观测。"""
+        if env_ids.numel() == 0:
+            return
+        fill_obs = reset_obs[env_ids].unsqueeze(1).repeat(1, self.amp_obs_history_steps, 1)
+        self._amp_obs_history[env_ids] = fill_obs
+
+    def _inject_terminal_amp_obs(self, flat_hist_obs: torch.Tensor, reset_env_ids: torch.Tensor, terminal_amp_states: torch.Tensor):
+        """将 done 环境最后一帧替换为终止观测，避免使用 reset 后状态污染判别器样本。"""
+        if reset_env_ids.numel() == 0:
+            return flat_hist_obs
+        term_obs = flat_hist_obs.clone()
+        terminal_amp_states = terminal_amp_states.to(flat_hist_obs.device)
+        last_slice = slice((self.amp_obs_history_steps - 1) * self.amp_obs_dim, self.amp_obs_history_steps * self.amp_obs_dim)
+        term_obs[reset_env_ids, last_slice] = terminal_amp_states
+        return term_obs
     
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
@@ -82,8 +116,10 @@ class AMPOnPolicyRunner:
         obs = self.env.get_observations()
         privileged_obs = self.env.get_privileged_observations()
         amp_obs = self.env.get_amp_observations()
+        self._init_amp_history(amp_obs.to(self.device))
+        amp_disc_obs = self._flatten_amp_history()
         critic_obs = privileged_obs if privileged_obs is not None else obs
-        obs, critic_obs, amp_obs = obs.to(self.device), critic_obs.to(self.device), amp_obs.to(self.device)
+        obs, critic_obs, amp_disc_obs = obs.to(self.device), critic_obs.to(self.device), amp_disc_obs.to(self.device)
         self.alg.actor_critic.train() # switch to train mode (for dropout for example)
         self.alg.discriminator.train()
 
@@ -103,24 +139,31 @@ class AMPOnPolicyRunner:
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs, amp_obs)
+                    actions = self.alg.act(obs, critic_obs, amp_disc_obs)
                     obs, privileged_obs, rewards, dones, infos, reset_env_ids, terminal_amp_states = self.env.step(actions, not_amp=False)
                     next_amp_obs = self.env.get_amp_observations()
 
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, next_amp_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), next_amp_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
 
-                    # Account for terminal states.
-                    next_amp_obs_with_term = torch.clone(next_amp_obs)
-                    next_amp_obs_with_term[reset_env_ids] = terminal_amp_states
+                    # 更新历史窗口，并构造判别器输入。
+                    self._push_amp_history(next_amp_obs)
+                    next_amp_disc_obs = self._flatten_amp_history()
+                    next_amp_disc_obs_with_term = self._inject_terminal_amp_obs(
+                        next_amp_disc_obs, reset_env_ids, terminal_amp_states
+                    )
 
                     lerp_rewards, d_logits, amp_rewards = self.alg.discriminator.predict_amp_reward(
-                        amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer
+                        state=next_amp_disc_obs_with_term,
+                        task_reward=rewards,
+                        normalizer=self.alg.amp_normalizer,
                     )
                     d_logits = d_logits.squeeze(-1)
                     amp_rewards = amp_rewards.squeeze(-1)
-                    amp_obs = torch.clone(next_amp_obs)
-                    self.alg.process_env_step(lerp_rewards, dones, infos, next_amp_obs_with_term)
+                    self.alg.process_env_step(lerp_rewards, dones, infos, next_amp_disc_obs_with_term)
+                    # 进入新 episode 的环境，历史窗口应从 reset 状态重新开始。
+                    self._reset_amp_history_for_envs(reset_env_ids, next_amp_obs)
+                    amp_disc_obs = torch.clone(self._flatten_amp_history())
                     
                     if self.log_dir is not None:
                         # Book keeping

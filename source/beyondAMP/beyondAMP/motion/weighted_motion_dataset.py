@@ -19,12 +19,12 @@ class WeightedMotionDataset(MotionDataset):
         transition_weights: torch.Tensor | None = None,
     ):
         super().__init__(cfg, env, device)
-        num_transitions = len(self.index_t)
+        num_histories = len(self.index_hist_end)
         if transition_weights is not None:
-            assert transition_weights.shape[0] == num_transitions
+            assert transition_weights.shape[0] == num_histories
             self.weights = transition_weights.to(device).clone()
         else:
-            self.weights = torch.ones(len(self.index_t)).to(device)
+            self.weights = torch.ones(num_histories).to(device)
 
         self._traj_weights = traj_weights
         self.norm_weights()
@@ -59,15 +59,15 @@ class WeightedMotionDataset(MotionDataset):
             Tensor of shape (#transitions,)
         """
         if traj_weights is None:
-            return torch.ones(len(self.index_t))
+            return torch.ones(len(self.index_hist_end))
 
         traj_weights = torch.tensor(traj_weights, dtype=torch.float32)
 
         weights = []
-        for w, L in zip(traj_weights, self._traj_lengths):
-            if L >= 2:
-                # L frames → L-1 transitions
-                weights.append(torch.full((L - 1,), float(w)))
+        for w, L in zip(traj_weights, self.traj_lengths):
+            if L >= self.history_steps:
+                # L frames -> L-H+1 history windows
+                weights.append(torch.full((L - self.history_steps + 1,), float(w)))
 
         return torch.cat(weights, dim=0)
 
@@ -75,10 +75,18 @@ class WeightedMotionDataset(MotionDataset):
     # Sampling
     # ---------------------------------------------------------
     def sample_batch(self, batch_size: int, replacement = True):
+        """兼容旧接口：返回 (t, t+1) transition 索引。"""
         idx = torch.multinomial(self.weights, batch_size, replacement=replacement)
-        t   = self.index_t[idx]
-        tp1 = self.index_tp1[idx]
+        idx_end = self.index_hist_end[idx]
+        t = idx_end - 1
+        tp1 = idx_end
         return t, tp1
+
+    def sample_history_batch(self, batch_size: int, replacement=True):
+        """按权重采样判别器历史窗口索引 [B, H]。"""
+        idx = torch.multinomial(self.weights, batch_size, replacement=replacement)
+        idx_end = self.index_hist_end[idx]
+        return self._build_history_indices_from_end(idx_end)
 
 
 @configclass

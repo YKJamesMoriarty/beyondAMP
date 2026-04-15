@@ -33,10 +33,10 @@ class AMPDiscriminator(nn.Module):
 
     def compute_grad_pen(self,
                          expert_state,
-                         expert_next_state,
+                         expert_next_state=None,
                          lambda_=10):
-        expert_data = torch.cat([expert_state, expert_next_state], dim=-1)
-        expert_data.requires_grad = True
+        expert_data = expert_state if expert_next_state is None else torch.cat([expert_state, expert_next_state], dim=-1)
+        expert_data = expert_data.detach().clone().requires_grad_(True)
 
         disc = self.amp_linear(self.trunk(expert_data))
         ones = torch.ones(disc.size(), device=disc.device)
@@ -50,16 +50,18 @@ class AMPDiscriminator(nn.Module):
         return grad_pen
 
     def predict_amp_reward(
-            self, state, next_state, task_reward, normalizer=None):
+            self, state, next_state=None, task_reward=None, normalizer=None):
         with torch.no_grad():
             self.eval()
             if normalizer is not None:
                 state = normalizer.normalize_torch(state, self.device)
-                next_state = normalizer.normalize_torch(next_state, self.device)
+                if next_state is not None:
+                    next_state = normalizer.normalize_torch(next_state, self.device)
 
-            d = self.amp_linear(self.trunk(torch.cat([state, next_state], dim=-1)))
+            disc_input = state if next_state is None else torch.cat([state, next_state], dim=-1)
+            d = self.amp_linear(self.trunk(disc_input))
             reward = self.amp_reward_coef * torch.clamp(1 - (1/4) * torch.square(d - 1), min=0)
-            if self.task_reward_lerp > 0:
+            if self.task_reward_lerp > 0 and task_reward is not None:
                 reward = self._lerp_reward(reward, task_reward.unsqueeze(-1))
             self.train()
         return reward.squeeze(), d

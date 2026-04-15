@@ -50,6 +50,8 @@ class G1StanceAMPRunnerCfg(AMPRunnerCfg):
         body_names=general.key_body_names,
         anchor_name=general.anchor_name,
         amp_obs_terms=AMPObsBaiscTerms,
+        # MimicKit 风格：判别器使用 10 帧历史窗口。
+        history_steps=10,
     )
     amp_discr_hidden_dims = [256, 256]
     amp_reward_coef = 1.0
