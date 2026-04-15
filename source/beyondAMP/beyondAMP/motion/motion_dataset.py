@@ -34,6 +34,11 @@ class MotionDataset:
         self.observation_terms = cfg.amp_obs_terms
         # 判别器历史窗口长度，默认 2（与旧版 transition 输入等价）。
         self.history_steps = max(int(getattr(cfg, "history_steps", 2)), 2)
+        # MimicKit 风格语义对齐开关：
+        # 1) root x/y 相对历史窗口最新帧，z 保持绝对值；
+        # 2) key body 位置转为每帧相对 root。
+        self.root_xy_pos_rel_to_latest = bool(getattr(cfg, "root_xy_pos_rel_to_latest", False))
+        self.key_body_pos_rel_to_root = bool(getattr(cfg, "key_body_pos_rel_to_root", False))
         
         body_names = cfg.body_names
         self.body_indexes = torch.tensor(
@@ -44,6 +49,15 @@ class MotionDataset:
         self.anchor_index = torch.tensor(
             self.robot.find_bodies(anchor_name, preserve_order=True)[0], dtype=torch.long, device=device
         )
+        # 判别器 root（用于 root_pos_w 与 key_body 相对化）默认使用 pelvis。
+        # 若未显式提供，则回退到 anchor_name。
+        if ("root_pos_w" in self.observation_terms) or self.root_xy_pos_rel_to_latest or self.key_body_pos_rel_to_root:
+            root_name = cfg.root_name if len(cfg.root_name) > 0 else anchor_name
+            self.root_index = torch.tensor(
+                self.robot.find_bodies(root_name, preserve_order=True)[0], dtype=torch.long, device=device
+            )
+        else:
+            self.root_index = None
         
         self.load_motions()
         self._build_joint_reference()
@@ -166,6 +180,12 @@ class MotionDataset:
     @property
     def body_ang_vel_w(self):
         return self.body_ang_vel_w_all[:, self.body_indexes].reshape(self.total_dataset_size, -1)
+
+    @property
+    def root_pos_w(self):
+        if self.root_index is None:
+            raise ValueError("`root_pos_w` is requested but `root_index` is not initialized.")
+        return self.body_pos_w_all[:, self.root_index].reshape(self.total_dataset_size, -1)
     
     @property
     def body_pos_b(self):
@@ -394,11 +414,47 @@ class MotionDataset:
         Returns:
             disc_obs: [B, H * D] where D=sum(term_dims)
         """
-        res_hist = []
+        term_hist = {}
         for term in self.observation_terms:
             # term_data: [N, D_term] -> [B, H, D_term]
             term_data = getattr(self, term)[hist_idx]
-            res_hist.append(term_data)
+            term_hist[term] = term_data
+
+        root_pos_raw = None
+        if "root_pos_w" in term_hist:
+            root_pos_raw = term_hist["root_pos_w"]
+
+        # MimicKit 风格 root position：
+        # - x/y 对历史窗口最后一帧做相对化；
+        # - z 仍为每帧绝对高度。
+        if self.root_xy_pos_rel_to_latest:
+            if root_pos_raw is None:
+                raise ValueError("`root_xy_pos_rel_to_latest=True` requires `root_pos_w` in amp_obs_terms.")
+            if root_pos_raw.shape[-1] != 3:
+                raise ValueError(f"`root_pos_w` must have dim=3, got {root_pos_raw.shape[-1]}.")
+            ref_xy = root_pos_raw[:, -1:, 0:2]  # [B,1,2]
+            root_pos_obs = root_pos_raw.clone()
+            root_pos_obs[..., 0:2] = root_pos_obs[..., 0:2] - ref_xy
+            term_hist["root_pos_w"] = root_pos_obs
+
+        # MimicKit 风格 key body position：
+        # key_body_pos_rel_root = key_body_pos_w - root_pos_w（逐帧）。
+        if self.key_body_pos_rel_to_root:
+            if "body_pos_w" not in term_hist:
+                raise ValueError("`key_body_pos_rel_to_root=True` requires `body_pos_w` in amp_obs_terms.")
+            if root_pos_raw is None:
+                raise ValueError("`key_body_pos_rel_to_root=True` requires `root_pos_w` in amp_obs_terms.")
+            body_pos_w = term_hist["body_pos_w"]  # [B,H,K*3]
+            if body_pos_w.shape[-1] % 3 != 0:
+                raise ValueError(f"`body_pos_w` dim must be multiple of 3, got {body_pos_w.shape[-1]}.")
+            num_key_bodies = body_pos_w.shape[-1] // 3
+            body_pos_w = body_pos_w.view(body_pos_w.shape[0], body_pos_w.shape[1], num_key_bodies, 3)
+            body_pos_rel = body_pos_w - root_pos_raw.unsqueeze(-2)
+            term_hist["body_pos_w"] = body_pos_rel.reshape(body_pos_rel.shape[0], body_pos_rel.shape[1], -1)
+
+        res_hist = []
+        for term in self.observation_terms:
+            res_hist.append(term_hist[term])
         # [B, H, D]
         hist = torch.cat(res_hist, dim=-1)
         return hist.reshape(hist.shape[0], -1)
@@ -412,5 +468,11 @@ class MotionDatasetCfg:
     body_names          : List[str] = MISSING
     amp_obs_terms       : List[str] = MISSING
     anchor_name         : str = MISSING
+    # 判别器 root body 名称（默认 pelvis；传空字符串则回退到 anchor_name）。
+    root_name           : str = "pelvis"
     # 判别器历史帧窗口长度。2 等价旧版 (s_t, s_{t+1}) 拼接。
     history_steps       : int = 2
+    # MimicKit 风格 root 位置观测：x/y 相对历史窗口最后一帧；z 保持绝对值。
+    root_xy_pos_rel_to_latest: bool = False
+    # MimicKit 风格 key body 观测：每帧 key body 位置减去同帧 root 位置。
+    key_body_pos_rel_to_root: bool = False

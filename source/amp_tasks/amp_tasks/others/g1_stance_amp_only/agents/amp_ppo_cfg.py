@@ -6,7 +6,7 @@ from beyondAMP.isaaclab.rsl_rl.configs.amp_cfg import (
     AMPRunnerCfg,
     MotionDatasetCfg,
 )
-from beyondAMP.obs_groups import AMPObsBaiscTerms
+from beyondAMP.obs_groups import AMPObsG1MimicRootKeyTerms
 
 from . import general
 
@@ -49,9 +49,14 @@ class G1StanceAMPRunnerCfg(AMPRunnerCfg):
         motion_files=general.amp_data_files,
         body_names=general.key_body_names,
         anchor_name=general.anchor_name,
-        amp_obs_terms=AMPObsBaiscTerms,
+        root_name="pelvis",
+        amp_obs_terms=AMPObsG1MimicRootKeyTerms,
         # MimicKit 风格：判别器使用 10 帧历史窗口。
         history_steps=10,
+        # root position: x/y 相对历史窗口最新帧；z 保持绝对值。
+        root_xy_pos_rel_to_latest=True,
+        # key body position: 每帧都转为相对于同帧 root 的位置。
+        key_body_pos_rel_to_root=True,
     )
     amp_discr_hidden_dims = [256, 256]
     amp_reward_coef = 1.0

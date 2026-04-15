@@ -44,7 +44,11 @@ class AMPOnPolicyRunner:
         amp_data = env.motion_dataset
         amp_obs_dim = env.get_amp_observations().shape[-1] # amp_data.observation_dim
         self.amp_obs_dim = amp_obs_dim
+        self.amp_obs_terms = list(amp_data.observation_terms)
+        self.amp_obs_term_slices = self._build_obs_term_slices(self.amp_obs_terms, list(amp_data.observation_dims))
         self.amp_obs_history_steps = max(int(self.amp_data_cfg.get("history_steps", 2)), 2)
+        self.root_xy_pos_rel_to_latest = bool(self.amp_data_cfg.get("root_xy_pos_rel_to_latest", False))
+        self.key_body_pos_rel_to_root = bool(self.amp_data_cfg.get("key_body_pos_rel_to_root", False))
         self.amp_disc_obs_dim = self.amp_obs_dim * self.amp_obs_history_steps
         amp_normalizer = Normalizer(self.amp_disc_obs_dim)
         discriminator = AMPDiscriminator(
@@ -76,6 +80,15 @@ class AMPOnPolicyRunner:
         _, _ = self.env.reset()
         self._amp_obs_history = None
 
+    @staticmethod
+    def _build_obs_term_slices(term_names, term_dims):
+        term_slices = {}
+        start = 0
+        for name, dim in zip(term_names, term_dims):
+            term_slices[name] = slice(start, start + dim)
+            start += dim
+        return term_slices
+
     def _init_amp_history(self, amp_obs: torch.Tensor):
         """使用当前观测初始化历史窗口 [N, H, D]。"""
         self._amp_obs_history = amp_obs.unsqueeze(1).repeat(1, self.amp_obs_history_steps, 1)
@@ -85,9 +98,49 @@ class AMPOnPolicyRunner:
         self._amp_obs_history = torch.roll(self._amp_obs_history, shifts=-1, dims=1)
         self._amp_obs_history[:, -1, :] = next_amp_obs
 
-    def _flatten_amp_history(self):
-        """展平历史窗口为判别器输入 [N, H*D]。"""
-        return self._amp_obs_history.reshape(self._amp_obs_history.shape[0], -1)
+    def _build_disc_obs_from_history(self, amp_obs_hist: torch.Tensor):
+        """将历史窗口观测转换为判别器输入（贴近 MimicKit 语义）。
+
+        输入:
+            amp_obs_hist: [N, H, D_raw]
+        输出:
+            disc_obs: [N, H * D_raw]
+        """
+        hist = amp_obs_hist.clone()
+        root_pos_raw = None
+
+        # 读取 root（anchor）绝对位置
+        if "root_pos_w" in self.amp_obs_term_slices:
+            root_slice = self.amp_obs_term_slices["root_pos_w"]
+            root_pos_raw = hist[:, :, root_slice]  # [N,H,3]
+
+        # root position: x/y 相对历史窗口最新帧，z 保持绝对值。
+        if self.root_xy_pos_rel_to_latest:
+            if root_pos_raw is None:
+                raise ValueError("`root_xy_pos_rel_to_latest=True` requires `root_pos_w` in amp_obs_terms.")
+            if root_pos_raw.shape[-1] != 3:
+                raise ValueError(f"`root_pos_w` dim must be 3, got {root_pos_raw.shape[-1]}.")
+            ref_xy = root_pos_raw[:, -1:, 0:2]
+            root_obs = root_pos_raw.clone()
+            root_obs[..., 0:2] = root_obs[..., 0:2] - ref_xy
+            hist[:, :, root_slice] = root_obs
+
+        # key body position relative root: key_pos_w - root_pos_w（逐帧）。
+        if self.key_body_pos_rel_to_root:
+            if "body_pos_w" not in self.amp_obs_term_slices:
+                raise ValueError("`key_body_pos_rel_to_root=True` requires `body_pos_w` in amp_obs_terms.")
+            if root_pos_raw is None:
+                raise ValueError("`key_body_pos_rel_to_root=True` requires `root_pos_w` in amp_obs_terms.")
+            key_slice = self.amp_obs_term_slices["body_pos_w"]
+            key_pos_w = hist[:, :, key_slice]
+            if key_pos_w.shape[-1] % 3 != 0:
+                raise ValueError(f"`body_pos_w` dim must be multiple of 3, got {key_pos_w.shape[-1]}.")
+            num_key = key_pos_w.shape[-1] // 3
+            key_pos_w = key_pos_w.view(key_pos_w.shape[0], key_pos_w.shape[1], num_key, 3)
+            key_pos_rel = key_pos_w - root_pos_raw.unsqueeze(-2)
+            hist[:, :, key_slice] = key_pos_rel.reshape(key_pos_rel.shape[0], key_pos_rel.shape[1], -1)
+
+        return hist.reshape(hist.shape[0], -1)
 
     def _reset_amp_history_for_envs(self, env_ids: torch.Tensor, reset_obs: torch.Tensor):
         """done 环境进入新 episode 时，将历史窗口重置为当前 reset 观测。"""
@@ -96,15 +149,14 @@ class AMPOnPolicyRunner:
         fill_obs = reset_obs[env_ids].unsqueeze(1).repeat(1, self.amp_obs_history_steps, 1)
         self._amp_obs_history[env_ids] = fill_obs
 
-    def _inject_terminal_amp_obs(self, flat_hist_obs: torch.Tensor, reset_env_ids: torch.Tensor, terminal_amp_states: torch.Tensor):
-        """将 done 环境最后一帧替换为终止观测，避免使用 reset 后状态污染判别器样本。"""
+    def _inject_terminal_amp_obs(self, hist_obs: torch.Tensor, reset_env_ids: torch.Tensor, terminal_amp_states: torch.Tensor):
+        """将 done 环境最后一帧（最新帧）替换为终止观测。"""
         if reset_env_ids.numel() == 0:
-            return flat_hist_obs
-        term_obs = flat_hist_obs.clone()
-        terminal_amp_states = terminal_amp_states.to(flat_hist_obs.device)
-        last_slice = slice((self.amp_obs_history_steps - 1) * self.amp_obs_dim, self.amp_obs_history_steps * self.amp_obs_dim)
-        term_obs[reset_env_ids, last_slice] = terminal_amp_states
-        return term_obs
+            return hist_obs
+        term_hist = hist_obs.clone()
+        terminal_amp_states = terminal_amp_states.to(hist_obs.device)
+        term_hist[reset_env_ids, -1, :] = terminal_amp_states
+        return term_hist
     
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
@@ -117,7 +169,7 @@ class AMPOnPolicyRunner:
         privileged_obs = self.env.get_privileged_observations()
         amp_obs = self.env.get_amp_observations()
         self._init_amp_history(amp_obs.to(self.device))
-        amp_disc_obs = self._flatten_amp_history()
+        amp_disc_obs = self._build_disc_obs_from_history(self._amp_obs_history)
         critic_obs = privileged_obs if privileged_obs is not None else obs
         obs, critic_obs, amp_disc_obs = obs.to(self.device), critic_obs.to(self.device), amp_disc_obs.to(self.device)
         self.alg.actor_critic.train() # switch to train mode (for dropout for example)
@@ -148,10 +200,11 @@ class AMPOnPolicyRunner:
 
                     # 更新历史窗口，并构造判别器输入。
                     self._push_amp_history(next_amp_obs)
-                    next_amp_disc_obs = self._flatten_amp_history()
-                    next_amp_disc_obs_with_term = self._inject_terminal_amp_obs(
-                        next_amp_disc_obs, reset_env_ids, terminal_amp_states
+                    next_hist = self._amp_obs_history
+                    next_hist_with_term = self._inject_terminal_amp_obs(
+                        next_hist, reset_env_ids, terminal_amp_states
                     )
+                    next_amp_disc_obs_with_term = self._build_disc_obs_from_history(next_hist_with_term)
 
                     lerp_rewards, d_logits, amp_rewards = self.alg.discriminator.predict_amp_reward(
                         state=next_amp_disc_obs_with_term,
@@ -163,7 +216,7 @@ class AMPOnPolicyRunner:
                     self.alg.process_env_step(lerp_rewards, dones, infos, next_amp_disc_obs_with_term)
                     # 进入新 episode 的环境，历史窗口应从 reset 状态重新开始。
                     self._reset_amp_history_for_envs(reset_env_ids, next_amp_obs)
-                    amp_disc_obs = torch.clone(self._flatten_amp_history())
+                    amp_disc_obs = torch.clone(self._build_disc_obs_from_history(self._amp_obs_history))
                     
                     if self.log_dir is not None:
                         # Book keeping

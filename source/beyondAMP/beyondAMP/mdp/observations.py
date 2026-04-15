@@ -19,6 +19,18 @@ def body_pos_w(
     body_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids] - env.scene.env_origins.unsqueeze(1)
     return body_pos_w.reshape(env.num_envs, -1)
 
+
+def root_pos_w(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Root (floating base) position in world frame, translated by env origins.
+
+    返回形状: [num_envs, 3]
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    return asset.data.root_pos_w - env.scene.env_origins
+
 def body_quat_w(
     env:ManagerBasedRLEnv, 
     asset_cfg:SceneEntityCfg=SceneEntityCfg("robot")

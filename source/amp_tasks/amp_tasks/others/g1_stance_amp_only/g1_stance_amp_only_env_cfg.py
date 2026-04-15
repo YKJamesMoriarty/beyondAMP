@@ -1,11 +1,13 @@
 from isaaclab.utils import configclass
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import SceneEntityCfg
 
 from robotlib.beyondMimic.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
 
 from amp_tasks.others.amp_env_cfg import AMPEnvCfg, EventCfg
-from beyondAMP.obs_groups import AMPObsBaiscCfg
+from beyondAMP.obs_groups import AMPObsG1MimicRootKeyCfg
 import beyondAMP.mdp as mdp
+from .agents import general
 
 
 @configclass
@@ -55,5 +57,9 @@ class G1StanceFlatEnvCfg(AMPEnvCfg):
         super().__post_init__()
         self.scene.robot = G1_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.actions.joint_pos.scale = G1_ACTION_SCALE
-        # 显式指定 AMP 观测组，避免基类改动带来的行为漂移。
-        self.observations.amp = AMPObsBaiscCfg()
+        # 使用 MimicKit 风格 AMP 观测：joint + root_pos + key_body_pos。
+        self.observations.amp = AMPObsG1MimicRootKeyCfg()
+        # 与 stance 任务配置保持一致：key body 明确从 general 读取，避免硬编码漂移。
+        self.observations.amp.body_pos_w.params["asset_cfg"] = SceneEntityCfg(
+            name="robot", body_names=general.key_body_names
+        )
