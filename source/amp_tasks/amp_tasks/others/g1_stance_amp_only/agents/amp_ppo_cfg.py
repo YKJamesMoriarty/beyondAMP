@@ -60,5 +60,6 @@ class G1StanceAMPRunnerCfg(AMPRunnerCfg):
     )
     amp_discr_hidden_dims = [256, 256]
     amp_reward_coef = 1.0
-    # 纯 AMP：PPO 更新只使用判别器生成的风格奖励，不混入任务奖励。
-    amp_task_reward_lerp = 0.0
+    # Task-only 阶段：PPO 奖励仅使用 task reward。
+    # 这里设置为 1.0 后，混合公式 r=(1-lerp)*amp + lerp*task 中 amp 分量系数为 0。
+    amp_task_reward_lerp = 1.0

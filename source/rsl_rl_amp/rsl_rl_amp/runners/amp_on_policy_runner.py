@@ -300,15 +300,19 @@ class AMPOnPolicyRunner:
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
         self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
         if len(locs['rewbuffer']) > 0:
+            mean_amp_reward = statistics.mean(locs['ampbuffer'])
             self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
+            # 兼容终端与可视化统一命名：amp_reward。
+            self.writer.add_scalar('Train/amp_reward', mean_amp_reward, locs['it'])
             # 注意：wandb 需要 step 全局单调递增。这里统一用 iteration 作为 step，
             # 避免和 time 轴混用导致 "step less than current step" 告警与数据被丢弃。
             self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), locs['it'])
             self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_amp_reward', statistics.mean(locs['ampbuffer']), locs['it'])
+            self.writer.add_scalar('Train/mean_amp_reward', mean_amp_reward, locs['it'])
             self.writer.add_scalar('Train/mean_discri_logits', statistics.mean(locs['discribuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_amp_reward/time', statistics.mean(locs['ampbuffer']), locs['it'])
+            self.writer.add_scalar('Train/amp_reward/time', mean_amp_reward, locs['it'])
+            self.writer.add_scalar('Train/mean_amp_reward/time', mean_amp_reward, locs['it'])
             self.writer.add_scalar('Train/mean_discri_logits/time', statistics.mean(locs['discribuffer']), locs['it'])
 
         str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
@@ -328,6 +332,7 @@ class AMPOnPolicyRunner:
                           f"""{'Disc Demo Acc:':>{pad}} {locs['mean_disc_demo_acc']:.4f}\n"""
                           f"""{'Disc Margin:':>{pad}} {locs['mean_disc_margin']:.4f}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
+                          f"""{'Mean AMP reward:':>{pad}} {statistics.mean(locs['ampbuffer']):.4f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
                         #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
@@ -372,7 +377,9 @@ class AMPOnPolicyRunner:
         self.alg.amp_normalizer = loaded_dict['amp_normalizer']
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
-        # self.current_learning_iteration = loaded_dict['iter']
+        # 续训时恢复迭代计数，确保日志步数与保存点连续。
+        if 'iter' in loaded_dict:
+            self.current_learning_iteration = loaded_dict['iter']
         return loaded_dict['infos']
 
     def get_inference_policy(self, device=None):

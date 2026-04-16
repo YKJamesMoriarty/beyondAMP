@@ -1,13 +1,30 @@
 from isaaclab.utils import configclass
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
+from isaaclab.envs import mdp
 
 from robotlib.beyondMimic.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
 
 from amp_tasks.others.amp_env_cfg import AMPEnvCfg, EventCfg
 from beyondAMP.obs_groups import AMPObsG1MimicRootKeyCfg
-import beyondAMP.mdp as mdp
 from .agents import general
+
+
+def action_rate_l2_scaled(env, scale: float = 0.1):
+    """对 action_rate_l2 做额外缩放，避免早期负惩罚过强。"""
+    return scale * mdp.action_rate_l2(env)
+
+
+@configclass
+class G1StanceRewardsCfg:
+    """Stance 任务专用奖励：只保留最小稳定项。"""
+
+    # 存活奖励：每个 step 未终止则给 1（再乘以权重）。
+    alive = RewTerm(func=mdp.is_alive, weight=2.0)
+    # 动作变化率惩罚：在原公式上额外乘 0.1，再乘 term 权重。
+    # 原始公式: sum((a_t - a_{t-1})^2)
+    action_rate_l2 = RewTerm(func=action_rate_l2_scaled, params={"scale": 0.1}, weight=-1e-1)
 
 
 @configclass
@@ -15,34 +32,44 @@ class G1StanceEventsCfg(EventCfg):
     """Stance 任务事件配置。
 
     设计目标：
-    1) 每次 reset 都从 demo 中随机采样一帧状态重置机器人；
-    2) 不额外叠加 reset 噪声，确保初始化语义清晰；
+    1) reset 行为与 punch hit 对齐：从“默认站立附近 + 随机扰动”启动；
+    2) 不依赖 demo 帧做初始化，更贴近 sim2real 上电/复位流程；
     3) 关闭 interval 推搡干扰，避免纯风格训练被外力扰动主导。
     """
 
-    reset_to_ref_motion_dataset = EventTerm(
-        func=mdp.reset_to_ref_motion_dataset,
+    # sim2real 友好的 root 初始化：
+    # - 在默认落点附近做小范围 x/y 扰动；
+    # - yaw 小范围扰动，避免初始朝向单一但不过度困难；
+    # - 速度清零。
+    reset_base = EventTerm(
+        func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            # 根位姿偏移噪声（这里为 0，表示严格使用 demo 采样状态）
-            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0), "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0)},
-            # 根速度偏移噪声（注意 key 使用 vx/vy/vz/wx/wy/wz）
+            "pose_range": {"x": (-0.1, 0.1), "y": (-0.1, 0.1), "yaw": (-0.2, 0.2)},
             "velocity_range": {
-                "vx": (0.0, 0.0),
-                "vy": (0.0, 0.0),
-                "vz": (0.0, 0.0),
-                "wx": (0.0, 0.0),
-                "wy": (0.0, 0.0),
-                "wz": (0.0, 0.0),
+                "x": (0.0, 0.0),
+                "y": (0.0, 0.0),
+                "z": (0.0, 0.0),
+                "roll": (0.0, 0.0),
+                "pitch": (0.0, 0.0),
+                "yaw": (0.0, 0.0),
             },
-            # 关节位置/速度偏移噪声（0 表示不扰动）
-            "joint_position_range": (0.0, 0.0),
-            "joint_velocity_range": (0.0, 0.0),
+        },
+    )
+    # 对齐作者原生任务：关节 reset 使用 scale 随机化（基于默认关节状态做比例缩放）。
+    reset_robot_joints = EventTerm(
+        func=mdp.reset_joints_by_scale,
+        mode="reset",
+        params={
+            "position_range": (-0.5, 1.0),
+            "velocity_range": (0.9, 1.0),
         },
     )
 
     def __post_init__(self):
         super().__post_init__()
+        # stance 不再使用“从 demo 随机帧重置”。
+        self.reset_to_ref_motion_dataset = None
         # stance 纯 AMP 训练中不使用 interval 外力推搡。
         self.push_robot = None
 
@@ -52,6 +79,7 @@ class G1StanceFlatEnvCfg(AMPEnvCfg):
     """G1 stance 动作的 AMP-only 环境配置。"""
 
     events = G1StanceEventsCfg()
+    rewards = G1StanceRewardsCfg()
 
     def __post_init__(self):
         super().__post_init__()
