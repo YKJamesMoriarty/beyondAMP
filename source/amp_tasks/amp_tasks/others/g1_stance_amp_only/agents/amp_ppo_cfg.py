@@ -58,8 +58,9 @@ class G1StanceAMPRunnerCfg(AMPRunnerCfg):
         # key body position: 每帧都转为相对于同帧 root 的位置。
         key_body_pos_rel_to_root=True,
     )
-    amp_discr_hidden_dims = [256, 256]
+    # 降低判别器容量，减缓判别器过快收敛（更利于 actor 跟上）。
+    amp_discr_hidden_dims = [128, 128]
     amp_reward_coef = 1.0
     # Task-only 阶段：PPO 奖励仅使用 task reward。
     # 这里设置为 1.0 后，混合公式 r=(1-lerp)*amp + lerp*task 中 amp 分量系数为 0。
-    amp_task_reward_lerp = 1.0
+    amp_task_reward_lerp = 0.4
