@@ -6,6 +6,8 @@ import argparse
 import pickle
 import tqdm
 import re
+import sys
+import numpy as np
 from isaaclab import __version__ as omni_isaac_lab_version
 from isaaclab.app import AppLauncher
 
@@ -22,6 +24,12 @@ parser.add_argument(
     type=str,
     default=None,
     help="Wandb run path or checkpoint path, e.g. entity/project/run_id or entity/project/run_id/model_50000.pt",
+)
+parser.add_argument(
+    "--onnx_path",
+    type=str,
+    default=None,
+    help="Path to an exported ONNX policy, e.g. logs/.../exported/policy.onnx",
 )
 
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
@@ -68,6 +76,53 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
 from rsl_rl_amp.runners import OnPolicyRunner
 from beyondAMP.isaaclab.rsl_rl.exporter import export_policy_as_jit, export_policy_as_onnx
+
+
+def _make_onnx_policy(onnx_path: str):
+    try:
+        import onnxruntime as ort
+    except Exception as exc:  # pragma: no cover - depends on runtime env
+        raise ImportError(
+            "ONNX playback requires onnxruntime. Install it in the same Python environment that launches Isaac Sim. "
+            f"Current python: {sys.executable}"
+        ) from exc
+
+    available_providers = ort.get_available_providers()
+    providers = []
+    if "CUDAExecutionProvider" in available_providers:
+        providers.append("CUDAExecutionProvider")
+    providers.append("CPUExecutionProvider")
+
+    session = ort.InferenceSession(onnx_path, providers=providers)
+    input_names = [item.name for item in session.get_inputs()]
+    if len(input_names) != 1:
+        raise RuntimeError(
+            f"Current play path only supports single-input ONNX policies, but got inputs={input_names}."
+        )
+    output_names = [item.name for item in session.get_outputs()]
+    return session, input_names[0], output_names[0]
+
+
+def _onnx_policy_act(session, input_name: str, obs: torch.Tensor, device: str | torch.device) -> torch.Tensor:
+    obs_np = obs.detach().to("cpu", copy=True).numpy().astype(np.float32, copy=False)
+    if obs_np.ndim == 1:
+        obs_np = obs_np[None, :]
+
+    input_shape = session.get_inputs()[0].shape
+    fixed_batch = len(input_shape) > 0 and isinstance(input_shape[0], int) and input_shape[0] == 1
+
+    if obs_np.shape[0] == 1 or not fixed_batch:
+        actions_np = session.run(None, {input_name: obs_np})[0]
+    else:
+        # The exported policy in this project is typically traced with batch=1.
+        # To keep vectorized environments working, run the ONNX policy env-by-env.
+        actions_list = []
+        for i in range(obs_np.shape[0]):
+            action_i = session.run(None, {input_name: obs_np[i : i + 1]})[0]
+            actions_list.append(action_i[0])
+        actions_np = np.stack(actions_list, axis=0)
+
+    return torch.from_numpy(actions_np).to(device=device)
 
 
 def _resolve_wandb_checkpoint(wandb_path: str) -> tuple[str, str, str]:
@@ -124,7 +179,14 @@ def _resolve_wandb_checkpoint(wandb_path: str) -> tuple[str, str, str]:
 def main():
     """Play with RSL-RL agent. base branch"""
     task_name = args_cli.task
-    if args_cli.wandb_path is not None:
+    use_onnx = args_cli.onnx_path is not None
+    if use_onnx:
+        resume_path = os.path.abspath(args_cli.onnx_path)
+        log_root_path = os.path.dirname(os.path.dirname(resume_path))
+        print(f"[INFO]: Loading ONNX policy from: {resume_path}")
+        log_dir = os.path.dirname(resume_path)
+        run_path = os.path.dirname(resume_path)
+    elif args_cli.wandb_path is not None:
         run_path_wandb, model_file_name, resume_path = _resolve_wandb_checkpoint(args_cli.wandb_path)
         log_root_path = os.path.dirname(os.path.dirname(resume_path))
         print(f"[INFO]: Downloaded wandb checkpoint: {run_path_wandb}/{model_file_name}")
@@ -213,26 +275,35 @@ def main():
 
     env, func_runner, learn_cfg = rsl_arg_cli.prepare_wrapper(env, args_cli, agent_cfg)
 
-    runner:OnPolicyRunner = func_runner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    onnx_session = None
+    onnx_input_name = None
+    policy = None
 
-    runner.load(resume_path)
-    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+    if use_onnx:
+        onnx_session, onnx_input_name, onnx_output_name = _make_onnx_policy(resume_path)
+        print(f"[INFO]: Using ONNX output node: {onnx_output_name}")
+    else:
+        runner:OnPolicyRunner = func_runner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
 
-    # obtain the trained policy for inference
-    policy = runner.get_inference_policy(device=env.unwrapped.device)
+        runner.load(resume_path)
+        print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+
+        # obtain the trained policy for inference
+        policy = runner.get_inference_policy(device=env.unwrapped.device)
 
     # reset environment
     obs = env.get_observations()
 
-    # export policy
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    os.makedirs(export_model_dir, exist_ok=True)
-    torch.save(runner.alg.actor_critic, os.path.join(export_model_dir, "policy.pth"))
-    export_policy_as_onnx(runner.alg.actor_critic, export_model_dir, filename="policy.onnx")
-    export_policy_as_jit(runner.alg.actor_critic, None, export_model_dir, filename="policy.pt")
-    # export_policy_as_jit(runner.alg.policy, runner.alg.policy.actor_obs_normalizer, export_model_dir, filename="policy.pt")
+    if not use_onnx:
+        # export policy
+        export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+        os.makedirs(export_model_dir, exist_ok=True)
+        torch.save(runner.alg.actor_critic, os.path.join(export_model_dir, "policy.pth"))
+        export_policy_as_onnx(runner.alg.actor_critic, export_model_dir, filename="policy.onnx")
+        export_policy_as_jit(runner.alg.actor_critic, None, export_model_dir, filename="policy.pt")
+        # export_policy_as_jit(runner.alg.policy, runner.alg.policy.actor_obs_normalizer, export_model_dir, filename="policy.pt")
 
-    print(f"[INFO]: Saving policy to: {export_model_dir}")
+        print(f"[INFO]: Saving policy to: {export_model_dir}")
 
     pbar = tqdm.tqdm(range(args_cli.length)) if args_cli.length>0  else tqdm.tqdm()
     
@@ -243,7 +314,10 @@ def main():
             # run everything in inference mode
             with torch.inference_mode():
                 # agent stepping
-                actions = policy(obs)
+                if use_onnx:
+                    actions = _onnx_policy_act(onnx_session, onnx_input_name, obs, env.unwrapped.device)
+                else:
+                    actions = policy(obs)
                 # env stepping
                 obs, rewards, dones, infos = env.step(actions, not_amp=True)
 
