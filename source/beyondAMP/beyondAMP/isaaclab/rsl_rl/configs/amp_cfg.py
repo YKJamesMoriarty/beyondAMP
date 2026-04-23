@@ -11,6 +11,10 @@ from dataclasses import MISSING
 class AMPPPOAlgorithmCfg(RslRlPpoAlgorithmCfg):    
     class_name="AMPPPO"
     amp_replay_buffer_size: int = 100000
+    # 判别器 trunk 与 head 的 L2 正则（weight decay）。
+    # 默认值保持与旧实现一致，避免影响现有任务行为。
+    amp_trunk_weight_decay: float = 1e-3
+    amp_head_weight_decay: float = 1e-1
 
 @configclass
 class AMPPPOWeightedAlgorithmCfg(AMPPPOAlgorithmCfg):    

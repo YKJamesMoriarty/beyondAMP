@@ -43,6 +43,10 @@ class G1StanceAMPRunnerCfg(AMPRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
         rescore_interval=100,
+        # 让判别器学习“慢一点”的首轮设置：
+        # 提高 weight decay，抑制判别器过快过拟合到 demo/agent 差异。
+        amp_trunk_weight_decay=5e-3,
+        amp_head_weight_decay=2e-1,
     )
 
     amp_data = MotionDatasetCfg(

@@ -29,6 +29,8 @@ class AMPPPO:
                  desired_kl=0.01,
                  device='cpu',
                  amp_replay_buffer_size=100000,
+                 amp_trunk_weight_decay=1e-3,
+                 amp_head_weight_decay=1e-1,
                  min_std=None,
                  **kwargs
                  ):
@@ -58,9 +60,9 @@ class AMPPPO:
         params = [
             {'params': self.actor_critic.parameters(), 'name': 'actor_critic'},
             {'params': self.discriminator.trunk.parameters(),
-             'weight_decay': 10e-4, 'name': 'amp_trunk'},
+             'weight_decay': amp_trunk_weight_decay, 'name': 'amp_trunk'},
             {'params': self.discriminator.amp_linear.parameters(),
-             'weight_decay': 10e-2, 'name': 'amp_head'}]
+             'weight_decay': amp_head_weight_decay, 'name': 'amp_head'}]
         self.optimizer = optim.Adam(params, lr=learning_rate)
         self.transition = RolloutStorage.Transition()
 
