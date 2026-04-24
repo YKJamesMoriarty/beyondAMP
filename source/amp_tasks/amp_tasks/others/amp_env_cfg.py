@@ -28,16 +28,24 @@ import beyondAMP.mdp as mdp
 ##
 # Scene definition
 ##
+# 作者自带
+# VELOCITY_RANGE = {
+#     "x": (-0.5, 0.5),
+#     "y": (-0.5, 0.5),
+#     "z": (-0.2, 0.2),
+#     "roll": (-0.52, 0.52),
+#     "pitch": (-0.52, 0.52),
+#     "yaw": (-0.78, 0.78),
+# }
 
 VELOCITY_RANGE = {
     "x": (-0.5, 0.5),
     "y": (-0.5, 0.5),
-    "z": (-0.2, 0.2),
-    "roll": (-0.52, 0.52),
-    "pitch": (-0.52, 0.52),
+    "z": (-0.0, 0.0),
+    "roll": (-0.0, 0.0),
+    "pitch": (-0.0, 0.0),
     "yaw": (-0.78, 0.78),
 }
-
 
 @configclass
 class MySceneCfg(InteractiveSceneCfg):

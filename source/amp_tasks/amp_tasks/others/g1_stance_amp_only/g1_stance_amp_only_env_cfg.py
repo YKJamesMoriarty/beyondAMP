@@ -71,7 +71,7 @@ class G1StanceEventsCfg(EventCfg):
         # stance 不再使用“从 demo 随机帧重置”。
         self.reset_to_ref_motion_dataset = None
         # stance 纯 AMP 训练中不使用 interval 外力推搡。
-        self.push_robot = None
+        # self.push_robot = None
 
 
 @configclass
