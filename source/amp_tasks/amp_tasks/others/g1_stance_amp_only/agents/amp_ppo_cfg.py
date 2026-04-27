@@ -36,13 +36,26 @@ class G1StanceAMPRunnerCfg(AMPRunnerCfg):
         entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
+        # 历史基线：未拆分学习率时，actor/critic/disc 共用 learning_rate=1e-3。
         learning_rate=1.0e-3,
+        # 分离学习率：policy/critic 快一些，disc 慢一些。
+        # 若不显式设置 policy_learning_rate / disc_learning_rate，则都会回退到上面的 learning_rate。
+        policy_learning_rate=1.0e-3,
+        disc_learning_rate=1.0e-3,
+        # actor+critic 更新 2 次，disc 更新 1 次（减缓判别器过快收敛）。
+        # 原始数值为1
+        disc_update_interval=1,
         schedule="adaptive",
         gamma=0.99,
         lam=0.95,
         desired_kl=0.01,
         max_grad_norm=1.0,
         rescore_interval=100,
+        # 让判别器收敛更慢：提高判别器参数 L2 正则。
+        # amp_trunk_weight_decay=1e-3,
+        # amp_head_weight_decay=1e-1,
+        amp_trunk_weight_decay=1e-3,
+        amp_head_weight_decay=1e-1,
     )
 
     amp_data = MotionDatasetCfg(

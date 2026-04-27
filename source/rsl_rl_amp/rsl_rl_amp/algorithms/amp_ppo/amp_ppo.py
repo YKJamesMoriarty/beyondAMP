@@ -29,6 +29,11 @@ class AMPPPO:
                  desired_kl=0.01,
                  device='cpu',
                  amp_replay_buffer_size=100000,
+                 policy_learning_rate=None,
+                 disc_learning_rate=None,
+                 disc_update_interval=1,
+                 amp_trunk_weight_decay=1e-3,
+                 amp_head_weight_decay=1e-1,
                  min_std=None,
                  **kwargs
                  ):
@@ -37,7 +42,11 @@ class AMPPPO:
 
         self.desired_kl = desired_kl
         self.schedule = schedule
-        self.learning_rate = learning_rate
+        # 兼容旧配置：若未显式传入，则回退到共享 learning_rate。
+        self.learning_rate = policy_learning_rate if policy_learning_rate is not None else learning_rate
+        self.disc_learning_rate = disc_learning_rate if disc_learning_rate is not None else self.learning_rate
+        self.disc_update_interval = max(1, int(disc_update_interval))
+        self._update_step = 0
         self.min_std = min_std
 
         # Discriminator components
@@ -54,14 +63,23 @@ class AMPPPO:
         self.actor_critic.to(self.device)
         self.storage = None # initialized later
 
-        # Optimizer for policy and discriminator.
-        params = [
-            {'params': self.actor_critic.parameters(), 'name': 'actor_critic'},
-            {'params': self.discriminator.trunk.parameters(),
-             'weight_decay': 10e-4, 'name': 'amp_trunk'},
-            {'params': self.discriminator.amp_linear.parameters(),
-             'weight_decay': 10e-2, 'name': 'amp_head'}]
-        self.optimizer = optim.Adam(params, lr=learning_rate)
+        # 分离优化器：
+        # - self.optimizer: actor+critic（保持旧字段名，兼容 runner 的保存/加载逻辑）
+        # - self.disc_optimizer: 判别器
+        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=self.learning_rate)
+        disc_params = [
+            {'params': self.discriminator.trunk.parameters(), 'weight_decay': amp_trunk_weight_decay, 'name': 'amp_trunk'},
+            {'params': self.discriminator.amp_linear.parameters(), 'weight_decay': amp_head_weight_decay, 'name': 'amp_head'},
+        ]
+        self.disc_optimizer = optim.Adam(disc_params, lr=self.disc_learning_rate)
+        print(
+            "[AMP][Config] "
+            f"policy_lr={self.learning_rate:.2e}, "
+            f"disc_lr={self.disc_learning_rate:.2e}, "
+            f"disc_update_interval={self.disc_update_interval}, "
+            f"amp_trunk_wd={amp_trunk_weight_decay:.2e}, "
+            f"amp_head_wd={amp_head_weight_decay:.2e}"
+        )
         self.transition = RolloutStorage.Transition()
 
         # PPO parameters
@@ -202,24 +220,30 @@ class AMPPPO:
                 expert_d = self.discriminator(expert_disc_obs)
                 expert_loss = torch.nn.MSELoss()(
                     expert_d, torch.ones(expert_d.size(), device=self.device))
-                policy_loss = torch.nn.MSELoss()(
+                disc_policy_loss = torch.nn.MSELoss()(
                     policy_d, -1 * torch.ones(policy_d.size(), device=self.device))
-                amp_loss = 0.5 * (expert_loss + policy_loss)
+                amp_loss = 0.5 * (expert_loss + disc_policy_loss)
                 grad_pen_loss = self.discriminator.compute_grad_pen(
                     expert_disc_obs, lambda_=10)
 
-                # Compute total loss.
-                loss = (
-                    surrogate_loss +
-                    self.value_loss_coef * value_loss -
-                    self.entropy_coef * entropy_batch.mean() +
-                    amp_loss + grad_pen_loss)
-
-                # Gradient step
+                # 1) Actor+Critic 更新（不包含判别器损失）
+                policy_update_loss = (
+                    surrogate_loss
+                    + self.value_loss_coef * value_loss
+                    - self.entropy_coef * entropy_batch.mean()
+                )
                 self.optimizer.zero_grad()
-                loss.backward()
+                policy_update_loss.backward()
                 nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
                 self.optimizer.step()
+
+                # 2) 判别器更新（可按 interval 降低更新频率）
+                if self._update_step % self.disc_update_interval == 0:
+                    disc_loss = amp_loss + grad_pen_loss
+                    self.disc_optimizer.zero_grad()
+                    disc_loss.backward()
+                    self.disc_optimizer.step()
+                self._update_step += 1
 
                 if not self.actor_critic.fixed_std and self.min_std is not None:
                     self.actor_critic.std.data = self.actor_critic.std.data.clamp(min=self.min_std)

@@ -295,6 +295,7 @@ class AMPOnPolicyRunner:
         self.writer.add_scalar('Disc_Demo_Acc', locs['mean_disc_demo_acc'], locs['it'])
         self.writer.add_scalar('Disc_Margin', locs['mean_disc_margin'], locs['it'])
         self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
+        self.writer.add_scalar('Loss/disc_learning_rate', getattr(self.alg, "disc_learning_rate", self.alg.learning_rate), locs['it'])
         self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
         self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
         self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
@@ -327,6 +328,8 @@ class AMPOnPolicyRunner:
                           f"""{'Disc Agent Acc:':>{pad}} {locs['mean_disc_agent_acc']:.4f}\n"""
                           f"""{'Disc Demo Acc:':>{pad}} {locs['mean_disc_demo_acc']:.4f}\n"""
                           f"""{'Disc Margin:':>{pad}} {locs['mean_disc_margin']:.4f}\n"""
+                          f"""{'Policy learning rate:':>{pad}} {self.alg.learning_rate:.2e}\n"""
+                          f"""{'Disc learning rate:':>{pad}} {getattr(self.alg, 'disc_learning_rate', self.alg.learning_rate):.2e}\n"""
                           f"""{'Mean action noise std:':>{pad}} {mean_std.item():.2f}\n"""
                           f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
                           f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
@@ -353,14 +356,18 @@ class AMPOnPolicyRunner:
         print(log_string)
 
     def save(self, path, infos=None):
-        torch.save({
+        payload = {
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
             'discriminator_state_dict': self.alg.discriminator.state_dict(),
             'amp_normalizer': self.alg.amp_normalizer,
             'iter': self.current_learning_iteration,
             'infos': infos,
-            }, path)
+        }
+        # 兼容新增的判别器独立优化器。
+        if hasattr(self.alg, "disc_optimizer") and self.alg.disc_optimizer is not None:
+            payload['disc_optimizer_state_dict'] = self.alg.disc_optimizer.state_dict()
+        torch.save(payload, path)
         # 可选：上传 checkpoint 到 wandb（tensorboard 模式下为 no-op）。
         if self.writer is not None:
             self.writer.save_file(path)
@@ -371,8 +378,14 @@ class AMPOnPolicyRunner:
         self.alg.discriminator.load_state_dict(loaded_dict['discriminator_state_dict'])
         self.alg.amp_normalizer = loaded_dict['amp_normalizer']
         if load_optimizer:
-            self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
-        # self.current_learning_iteration = loaded_dict['iter']
+            # 兼容旧 checkpoint（仅有 optimizer_state_dict）和新 checkpoint（含 disc optimizer）。
+            if 'optimizer_state_dict' in loaded_dict:
+                self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+            if hasattr(self.alg, "disc_optimizer") and self.alg.disc_optimizer is not None:
+                if 'disc_optimizer_state_dict' in loaded_dict:
+                    self.alg.disc_optimizer.load_state_dict(loaded_dict['disc_optimizer_state_dict'])
+        if 'iter' in loaded_dict:
+            self.current_learning_iteration = loaded_dict['iter']
         return loaded_dict['infos']
 
     def get_inference_policy(self, device=None):
