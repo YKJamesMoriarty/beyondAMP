@@ -204,8 +204,17 @@ class TerminationsCfg:
             body_names="torso_link"
         ), "threshold": 1.0},
     )
-    base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.2})
+    base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.35})
     bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
+    robot_falling = DoneTerm(
+        func=mdp.robot_falling,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "height_threshold": 0.25,
+            # 倾斜超过 46° 触发: cos(46°) ≈ 0.695
+            "tilt_threshold": 0.695,
+        },
+    )
 
 
 @configclass
