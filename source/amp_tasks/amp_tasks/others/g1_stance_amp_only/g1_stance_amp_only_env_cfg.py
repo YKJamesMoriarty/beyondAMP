@@ -45,7 +45,7 @@ class G1StanceEventsCfg(EventCfg):
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3), "yaw": (-0.4, 0.4)},
+            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-0.78, 0.78)},
             "velocity_range": {
                 "x": (0.0, 0.0),
                 "y": (0.0, 0.0),
@@ -62,7 +62,7 @@ class G1StanceEventsCfg(EventCfg):
         mode="reset",
         params={
             "position_range": (-1.0, 1.0),
-            "velocity_range": (0.5, 1.0),
+            "velocity_range": (-1.0, 1.0),
         },
     )
 
