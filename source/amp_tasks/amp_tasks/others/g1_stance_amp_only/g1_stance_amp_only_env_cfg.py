@@ -25,7 +25,7 @@ class G1StanceEventsCfg(EventCfg):
         mode="reset",
         params={
             # 根位姿偏移噪声（这里为 0，表示严格使用 demo 采样状态）
-            "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0), "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0)},
+            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.5, 0.5), "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (-0.4, 0.4)},
             # 根速度偏移噪声（注意 key 使用 vx/vy/vz/wx/wy/wz）
             "velocity_range": {
                 "vx": (0.0, 0.0),
@@ -36,8 +36,8 @@ class G1StanceEventsCfg(EventCfg):
                 "wz": (0.0, 0.0),
             },
             # 关节位置/速度偏移噪声（0 表示不扰动）
-            "joint_position_range": (0.0, 0.0),
-            "joint_velocity_range": (0.0, 0.0),
+            "joint_position_range": (-1.0, 1.0),
+            "joint_velocity_range": (-1.0, 1.0),
         },
     )
 
