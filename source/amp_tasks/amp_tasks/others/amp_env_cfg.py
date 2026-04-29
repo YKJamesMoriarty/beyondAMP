@@ -214,6 +214,15 @@ class TerminationsCfg:
     )
     base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.2})
     bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
+    robot_falling = DoneTerm(
+        func=mdp.robot_falling,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "height_threshold": 0.25,
+            # 倾斜超过 46° 终止: cos(46°) ≈ 0.695
+            "tilt_threshold": 0.695,
+        },
+    )
 
 
 @configclass
