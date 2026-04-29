@@ -203,6 +203,43 @@ def pelvis_forward_lean(
     return reward
 
 
+def tilt_over_threshold_l2(
+    env: ManagerBasedRLEnv,
+    tilt_deg_threshold: float = 10.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """惩罚机体倾斜超过阈值的部分（hinge + L2）。
+
+    设计动机：
+    - 与 flat_orientation_l2 不同，本项在阈值以内不惩罚；
+    - 适合 stance 任务：允许小幅自然摆动，但抑制明显倾斜导致的摔倒。
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    cos_tilt = torch.clamp(-asset.data.projected_gravity_b[:, 2], -1.0, 1.0)
+    tilt_rad = torch.acos(cos_tilt)
+    threshold_rad = torch.deg2rad(torch.tensor(tilt_deg_threshold, device=env.device))
+    excess = torch.clamp(tilt_rad - threshold_rad, min=0.0)
+    return torch.square(excess)
+
+
+def foot_height_asym_penalty(
+    env: ManagerBasedRLEnv,
+    threshold: float = 0.04,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """惩罚“任意脚踝抬得过高”的站姿不稳定行为。
+
+    说明：
+    - 输入 body_ids 预期为左右踝（left/right_ankle_roll_link）；
+    - 只要任意一个踝点高度超过阈值就产生惩罚。
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    ankle_z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (num_envs, 2)
+    max_ankle_z = torch.max(ankle_z, dim=1).values
+    excess = torch.clamp(max_ankle_z - threshold, min=0.0)
+    return torch.square(excess)
+
+
 def single_limb_air_time(
     env: ManagerBasedRLEnv,
     sensor_cfg: SceneEntityCfg,
@@ -340,4 +377,3 @@ def any_limb_group_air_time(
     is_moving = (command_norm > 0.1).float()
     
     return any_group_air.float() * is_moving
-

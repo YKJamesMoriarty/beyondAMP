@@ -3,6 +3,7 @@ from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.envs import mdp
+import beyondAMP.mdp as bmdp
 
 from robotlib.beyondMimic.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
 
@@ -18,13 +19,60 @@ def action_rate_l2_scaled(env, scale: float = 0.1):
 
 @configclass
 class G1StanceRewardsCfg:
-    """Stance 任务专用奖励：只保留最小稳定项。"""
+    """Stance 任务专用奖励。
+
+    相比最简版（alive + action_rate），这里补充：
+    1) 关节越限惩罚（与 punch 任务一致）；
+    2) 非期望接触惩罚（与 punch 任务一致）；
+    3) 倾斜惩罚（flat_orientation_l2，连续惩罚）；
+    4) 脚踝抬高惩罚（抑制单脚莫名抬起）。
+    """
 
     # 存活奖励：每个 step 未终止则给 1（再乘以权重）。
-    alive = RewTerm(func=mdp.is_alive, weight=2.0)
+    alive = RewTerm(func=mdp.is_alive, weight=3.0)
     # 动作变化率惩罚：在原公式上额外乘 0.1，再乘 term 权重。
     # 原始公式: sum((a_t - a_{t-1})^2)
     action_rate_l2 = RewTerm(func=action_rate_l2_scaled, params={"scale": 0.1}, weight=-1e-1)
+    # 与 punch 任务保持一致：抑制关节超限。
+    joint_limit = RewTerm(
+        func=mdp.joint_pos_limits,
+        weight=-10.0,
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
+    )
+    # 与 punch 任务保持一致：抑制非期望碰撞（脚踝/手腕允许接触，其他身体接触惩罚）。
+    undesired_contacts = RewTerm(
+        func=mdp.undesired_contacts,
+        weight=-0.1,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[
+                    r"^(?!left_ankle_roll_link$)(?!right_ankle_roll_link$)(?!left_wrist_yaw_link$)(?!right_wrist_yaw_link$).+$"
+                ],
+            ),
+            "threshold": 1.0,
+        },
+    )
+    # 倾斜惩罚（连续式）：
+    # - 直接使用 flat_orientation_l2，对机体滚转/俯仰偏离持续惩罚；
+    # - 不再使用“超过阈值才惩罚”的 hinge 逻辑。
+    flat_orientation_l2 = RewTerm(
+        func=mdp.flat_orientation_l2,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+        weight=-1.0,
+    )
+    # 单脚抬高惩罚：任意脚踝高度超过 0.04m 后开始惩罚。
+    foot_height_asym_penalty = RewTerm(
+        func=bmdp.foot_height_asym_penalty,
+        params={
+            "threshold": 0.04,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
+            ),
+        },
+        weight=-1.0,
+    )
 
 
 @configclass
