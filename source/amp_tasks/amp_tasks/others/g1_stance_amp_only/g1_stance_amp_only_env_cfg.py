@@ -65,13 +65,13 @@ class G1StanceRewardsCfg:
     foot_height_asym_penalty = RewTerm(
         func=bmdp.foot_height_asym_penalty,
         params={
-            "threshold": 0.04,
+            "threshold": 0.02,
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
             ),
         },
-        weight=-1.0,
+        weight=-3.0,
     )
 
 
